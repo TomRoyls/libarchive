@@ -102,6 +102,22 @@ IF(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$")
   SET(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -w -O0 -fno-stack-protector")
 ENDIF()
 
+# Optimization: Platform-based early optimization decisions
+SET(LIBARCHIVE_FAST_HEADER_CHECK FALSE)
+IF(CMAKE_SYSTEM_NAME MATCHES "Linux" AND CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  # For common Linux + GCC/Clang setups, enable aggressive optimizations
+  SET(LIBARCHIVE_FAST_HEADER_CHECK TRUE)
+  MESSAGE(STATUS "Enabling fast header checking for Linux/GCC-Clang")
+ELSEIF(CMAKE_SYSTEM_NAME MATCHES "Darwin" AND CMAKE_C_COMPILER_ID MATCHES "^(AppleClang|Clang)$")
+  # For macOS with standard toolchain
+  SET(LIBARCHIVE_FAST_HEADER_CHECK TRUE)
+  MESSAGE(STATUS "Enabling fast header checking for macOS/Clang")
+ELSEIF(WIN32 AND MSVC)
+  # For Windows with MSVC
+  SET(LIBARCHIVE_FAST_HEADER_CHECK TRUE)
+  MESSAGE(STATUS "Enabling fast header checking for Windows/MSVC")
+ENDIF()
+
 # Enable the pkg-config helpers.
 INCLUDE(FindPkgConfig)
 
@@ -811,14 +827,280 @@ MACRO (LA_BATCH_CHECK_SYS_HEADERS)
   ENDIF()
 ENDMACRO (LA_BATCH_CHECK_SYS_HEADERS)
 
+# Optimization: Platform-specific batch checks
+MACRO (LA_BATCH_CHECK_PLATFORM_HEADERS)
+  # Linux-specific headers
+  IF(CMAKE_SYSTEM_NAME MATCHES "Linux")
+    SET(LINUX_HEADERS "linux/types.h" "linux/fiemap.h" "linux/fs.h" "linux/magic.h")
+    SET(NEED_LINUX_BATCH_CHECK TRUE)
+    FOREACH(header ${LINUX_HEADERS})
+      STRING(TOUPPER "${header}" header_upper)
+      STRING(REPLACE "/" "_" header_var "${header_upper}")
+      STRING(REPLACE "." "_" header_var "${header_var}")
+      SET(var_name "HAVE_${header_var}")
+      IF(DEFINED ${var_name})
+        SET(NEED_LINUX_BATCH_CHECK FALSE)
+        BREAK()
+      ENDIF()
+    ENDFOREACH()
+    
+    IF(NEED_LINUX_BATCH_CHECK)
+      SET(LINUX_BATCH_TEST_SOURCE "#include <sys/types.h>\n")
+      FOREACH(header ${LINUX_HEADERS})
+        SET(LINUX_BATCH_TEST_SOURCE "${LINUX_BATCH_TEST_SOURCE}#include <${header}>\n")
+      ENDFOREACH()
+      SET(LINUX_BATCH_TEST_SOURCE "${LINUX_BATCH_TEST_SOURCE}int main() { return 0; }")
+      
+      CHECK_C_SOURCE_COMPILES("${LINUX_BATCH_TEST_SOURCE}" LINUX_HEADERS_AVAILABLE)
+      
+      IF(LINUX_HEADERS_AVAILABLE)
+        FOREACH(header ${LINUX_HEADERS})
+          STRING(TOUPPER "${header}" header_upper)
+          STRING(REPLACE "/" "_" header_var "${header_upper}")
+          STRING(REPLACE "." "_" header_var "${header_var}")
+          SET(var_name "HAVE_${header_var}")
+          SET(${var_name} 1 CACHE BOOL "Have ${header}")
+          SET(INCLUDES ${INCLUDES} ${header})
+        ENDFOREACH()
+      ELSE()
+        FOREACH(header ${LINUX_HEADERS})
+          STRING(TOUPPER "${header}" header_upper)
+          STRING(REPLACE "/" "_" header_var "${header_upper}")
+          STRING(REPLACE "." "_" header_var "${header_var}")
+          SET(var_name "HAVE_${header_var}")
+          LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+        ENDFOREACH()
+      ENDIF()
+    ENDIF()
+  ENDIF()
+
+  # Windows-specific headers
+  IF(WIN32)
+    SET(WINDOWS_HEADERS "windows.h" "wincrypt.h" "winioctl.h")
+    IF(ENABLE_CNG)
+      LIST(APPEND WINDOWS_HEADERS "bcrypt.h")
+    ENDIF()
+    
+    SET(NEED_WINDOWS_BATCH_CHECK TRUE)
+    FOREACH(header ${WINDOWS_HEADERS})
+      STRING(TOUPPER "${header}" header_upper)
+      STRING(REPLACE "/" "_" header_var "${header_upper}")
+      STRING(REPLACE "." "_" header_var "${header_var}")
+      SET(var_name "HAVE_${header_var}")
+      IF(DEFINED ${var_name})
+        SET(NEED_WINDOWS_BATCH_CHECK FALSE)
+        BREAK()
+      ENDIF()
+    ENDFOREACH()
+    
+    IF(NEED_WINDOWS_BATCH_CHECK)
+      SET(WINDOWS_BATCH_TEST_SOURCE "")
+      FOREACH(header ${WINDOWS_HEADERS})
+        SET(WINDOWS_BATCH_TEST_SOURCE "${WINDOWS_BATCH_TEST_SOURCE}#include <${header}>\n")
+      ENDFOREACH()
+      SET(WINDOWS_BATCH_TEST_SOURCE "${WINDOWS_BATCH_TEST_SOURCE}int main() { return 0; }")
+      
+      CHECK_C_SOURCE_COMPILES("${WINDOWS_BATCH_TEST_SOURCE}" WINDOWS_HEADERS_AVAILABLE)
+      
+      IF(WINDOWS_HEADERS_AVAILABLE)
+        FOREACH(header ${WINDOWS_HEADERS})
+          STRING(TOUPPER "${header}" header_upper)
+          STRING(REPLACE "/" "_" header_var "${header_upper}")
+          STRING(REPLACE "." "_" header_var "${header_var}")
+          SET(var_name "HAVE_${header_var}")
+          SET(${var_name} 1 CACHE BOOL "Have ${header}")
+          SET(INCLUDES ${INCLUDES} ${header})
+        ENDFOREACH()
+        IF(ENABLE_CNG AND HAVE_BCRYPT_H)
+          LIST(APPEND ADDITIONAL_LIBS "bcrypt")
+        ENDIF()
+      ELSE()
+        FOREACH(header ${WINDOWS_HEADERS})
+          STRING(TOUPPER "${header}" header_upper)
+          STRING(REPLACE "/" "_" header_var "${header_upper}")
+          STRING(REPLACE "." "_" header_var "${header_var}")
+          SET(var_name "HAVE_${header_var}")
+          LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+        ENDFOREACH()
+      ENDIF()
+    ENDIF()
+  ENDIF()
+
+  # Additional sys/ headers batch (extended)
+  SET(EXTENDED_SYS_HEADERS "sys/acl.h" "sys/cdefs.h" "sys/poll.h" "sys/select.h" 
+                           "sys/statfs.h" "sys/statvfs.h" "sys/utsname.h" "sys/vfs.h" "sys/wait.h")
+  
+  SET(NEED_EXT_SYS_BATCH_CHECK TRUE)
+  FOREACH(header ${EXTENDED_SYS_HEADERS})
+    STRING(TOUPPER "${header}" header_upper)
+    STRING(REPLACE "/" "_" header_var "${header_upper}")
+    STRING(REPLACE "." "_" header_var "${header_var}")
+    SET(var_name "HAVE_${header_var}")
+    IF(DEFINED ${var_name})
+      SET(NEED_EXT_SYS_BATCH_CHECK FALSE)
+      BREAK()
+    ENDIF()
+  ENDFOREACH()
+  
+  IF(NEED_EXT_SYS_BATCH_CHECK)
+    SET(EXT_SYS_BATCH_TEST_SOURCE "#include <sys/types.h>\n")
+    FOREACH(header ${EXTENDED_SYS_HEADERS})
+      SET(EXT_SYS_BATCH_TEST_SOURCE "${EXT_SYS_BATCH_TEST_SOURCE}#include <${header}>\n")
+    ENDFOREACH()
+    SET(EXT_SYS_BATCH_TEST_SOURCE "${EXT_SYS_BATCH_TEST_SOURCE}int main() { return 0; }")
+    
+    CHECK_C_SOURCE_COMPILES("${EXT_SYS_BATCH_TEST_SOURCE}" EXTENDED_SYS_HEADERS_AVAILABLE)
+    
+    IF(EXTENDED_SYS_HEADERS_AVAILABLE)
+      FOREACH(header ${EXTENDED_SYS_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        SET(${var_name} 1 CACHE BOOL "Have ${header}")
+        SET(INCLUDES ${INCLUDES} ${header})
+      ENDFOREACH()
+    ELSE()
+      FOREACH(header ${EXTENDED_SYS_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+      ENDFOREACH()
+    ENDIF()
+  ENDIF()
+ENDMACRO (LA_BATCH_CHECK_PLATFORM_HEADERS)
+
+# Optimization: Smart header dependency checking
+MACRO (LA_SMART_CHECK_REMAINING_HEADERS)
+  # Group remaining headers by likely availability patterns
+  SET(UTILITY_HEADERS "fnmatch.h" "grp.h" "pwd.h" "spawn.h" "strings.h")
+  SET(DEVELOPMENT_HEADERS "dlfcn.h" "inttypes.h" "memory.h" "paths.h")
+  SET(NETWORK_HEADERS "poll.h" "pthread.h")
+  
+  # Check utility headers together
+  SET(NEED_UTILITY_CHECK TRUE)
+  FOREACH(header ${UTILITY_HEADERS})
+    STRING(TOUPPER "${header}" header_upper)
+    STRING(REPLACE "/" "_" header_var "${header_upper}")
+    STRING(REPLACE "." "_" header_var "${header_var}")
+    SET(var_name "HAVE_${header_var}")
+    IF(DEFINED ${var_name})
+      SET(NEED_UTILITY_CHECK FALSE)
+      BREAK()
+    ENDIF()
+  ENDFOREACH()
+  
+  IF(NEED_UTILITY_CHECK)
+    SET(UTILITY_TEST_SOURCE "")
+    FOREACH(header ${UTILITY_HEADERS})
+      SET(UTILITY_TEST_SOURCE "${UTILITY_TEST_SOURCE}#include <${header}>\n")
+    ENDFOREACH()
+    SET(UTILITY_TEST_SOURCE "${UTILITY_TEST_SOURCE}int main() { return 0; }")
+    
+    CHECK_C_SOURCE_COMPILES("${UTILITY_TEST_SOURCE}" UTILITY_HEADERS_AVAILABLE)
+    
+    IF(UTILITY_HEADERS_AVAILABLE)
+      FOREACH(header ${UTILITY_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        SET(${var_name} 1 CACHE BOOL "Have ${header}")
+        SET(INCLUDES ${INCLUDES} ${header})
+      ENDFOREACH()
+    ELSE()
+      FOREACH(header ${UTILITY_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+      ENDFOREACH()
+    ENDIF()
+  ENDIF()
+ENDMACRO (LA_SMART_CHECK_REMAINING_HEADERS)
+
+# Optimization: Mega-batch check for well-known platforms
+MACRO (LA_MEGA_BATCH_CHECK_KNOWN_PLATFORM)
+  IF(LIBARCHIVE_FAST_HEADER_CHECK)
+    # Try to check a large set of common headers in one go for known platforms
+    SET(MEGA_BATCH_HEADERS 
+        "errno.h" "fcntl.h" "limits.h" "locale.h" "signal.h" "stdarg.h" "stdint.h" 
+        "stdlib.h" "string.h" "time.h" "unistd.h" "sys/stat.h" "sys/time.h" 
+        "sys/param.h" "sys/mount.h" "sys/ioctl.h" "fnmatch.h" "grp.h" "pwd.h" 
+        "spawn.h" "strings.h" "poll.h" "pthread.h" "inttypes.h" "memory.h" 
+        "paths.h" "dlfcn.h" "sys/acl.h" "sys/cdefs.h" "sys/poll.h" "sys/select.h" 
+        "sys/statfs.h" "sys/statvfs.h" "sys/utsname.h" "sys/vfs.h" "sys/wait.h")
+    
+    # Add platform-specific headers
+    IF(CMAKE_SYSTEM_NAME MATCHES "Linux")
+      LIST(APPEND MEGA_BATCH_HEADERS "linux/types.h" "linux/fiemap.h" "linux/fs.h" "linux/magic.h")
+    ENDIF()
+    
+    # Check if any are already cached (if so, skip mega-batch)
+    SET(NEED_MEGA_BATCH_CHECK TRUE)
+    FOREACH(header ${MEGA_BATCH_HEADERS})
+      STRING(TOUPPER "${header}" header_upper)
+      STRING(REPLACE "/" "_" header_var "${header_upper}")
+      STRING(REPLACE "." "_" header_var "${header_var}")
+      SET(var_name "HAVE_${header_var}")
+      IF(DEFINED ${var_name})
+        SET(NEED_MEGA_BATCH_CHECK FALSE)
+        BREAK()
+      ENDIF()
+    ENDFOREACH()
+    
+    IF(NEED_MEGA_BATCH_CHECK)
+      MESSAGE(STATUS "Attempting mega-batch header check for ${CMAKE_SYSTEM_NAME}")
+      SET(MEGA_BATCH_TEST_SOURCE "#include <sys/types.h>\n")
+      FOREACH(header ${MEGA_BATCH_HEADERS})
+        SET(MEGA_BATCH_TEST_SOURCE "${MEGA_BATCH_TEST_SOURCE}#include <${header}>\n")
+      ENDFOREACH()
+      SET(MEGA_BATCH_TEST_SOURCE "${MEGA_BATCH_TEST_SOURCE}int main() { return 0; }")
+      
+      CHECK_C_SOURCE_COMPILES("${MEGA_BATCH_TEST_SOURCE}" MEGA_BATCH_HEADERS_AVAILABLE)
+      
+      IF(MEGA_BATCH_HEADERS_AVAILABLE)
+        MESSAGE(STATUS "Mega-batch succeeded - setting ${CMAKE_LIST_LENGTH} headers at once" MEGA_BATCH_HEADERS)
+        FOREACH(header ${MEGA_BATCH_HEADERS})
+          STRING(TOUPPER "${header}" header_upper)
+          STRING(REPLACE "/" "_" header_var "${header_upper}")
+          STRING(REPLACE "." "_" header_var "${header_var}")
+          SET(var_name "HAVE_${header_var}")
+          SET(${var_name} 1 CACHE BOOL "Have ${header}")
+          SET(INCLUDES ${INCLUDES} ${header})
+        ENDFOREACH()
+        SET(LIBARCHIVE_MEGA_BATCH_SUCCESS TRUE CACHE BOOL "Mega-batch was successful")
+      ELSE()
+        MESSAGE(STATUS "Mega-batch failed - falling back to individual/smaller batch checks")
+        SET(LIBARCHIVE_MEGA_BATCH_SUCCESS FALSE CACHE BOOL "Mega-batch failed")
+      ENDIF()
+    ENDIF()
+  ENDIF()
+ENDMACRO (LA_MEGA_BATCH_CHECK_KNOWN_PLATFORM)
+
 # Some FreeBSD headers assume sys/types.h was already included.
 LA_CHECK_INCLUDE_FILE("sys/types.h" HAVE_SYS_TYPES_H)
 
-# Use batch checking for common standard headers
-LA_BATCH_CHECK_INCLUDE_FILES()
+# Try mega-batch first for known platforms
+LA_MEGA_BATCH_CHECK_KNOWN_PLATFORM()
 
-# Use batch checking for common sys/ headers
-LA_BATCH_CHECK_SYS_HEADERS()
+# Only run smaller batches if mega-batch wasn't successful or not applicable
+IF(NOT LIBARCHIVE_MEGA_BATCH_SUCCESS)
+  # Use batch checking for common standard headers
+  LA_BATCH_CHECK_INCLUDE_FILES()
+
+  # Use batch checking for common sys/ headers
+  LA_BATCH_CHECK_SYS_HEADERS()
+
+  # Use platform-specific batch checking
+  LA_BATCH_CHECK_PLATFORM_HEADERS()
+
+  # Use smart batching for remaining common headers
+  LA_SMART_CHECK_REMAINING_HEADERS()
+ENDIF()
 
 # Check remaining headers individually
 LA_CHECK_INCLUDE_FILE("acl/libacl.h" HAVE_ACL_LIBACL_H)
@@ -833,61 +1115,43 @@ CHECK_C_SOURCE_COMPILES("#include <sys/ioctl.h>
 #include <ext2fs/ext2_fs.h>
 int main(void) { return EXT2_IOC_GETFLAGS; }" HAVE_WORKING_EXT2_IOC_GETFLAGS)
 
-LA_CHECK_INCLUDE_FILE("fnmatch.h" HAVE_FNMATCH_H)
-LA_CHECK_INCLUDE_FILE("grp.h" HAVE_GRP_H)
-LA_CHECK_INCLUDE_FILE("inttypes.h" HAVE_INTTYPES_H)
 LA_CHECK_INCLUDE_FILE("io.h" HAVE_IO_H)
 LA_CHECK_INCLUDE_FILE("langinfo.h" HAVE_LANGINFO_H)
-LA_CHECK_INCLUDE_FILE("linux/types.h" HAVE_LINUX_TYPES_H)
-LA_CHECK_INCLUDE_FILE("linux/fiemap.h" HAVE_LINUX_FIEMAP_H)
-LA_CHECK_INCLUDE_FILE("linux/fs.h" HAVE_LINUX_FS_H)
 
 CHECK_C_SOURCE_COMPILES("#include <sys/ioctl.h>
 #include <linux/fs.h>
 int main(void) { return FS_IOC_GETFLAGS; }" HAVE_WORKING_FS_IOC_GETFLAGS)
 
-LA_CHECK_INCLUDE_FILE("linux/magic.h" HAVE_LINUX_MAGIC_H)
 LA_CHECK_INCLUDE_FILE("membership.h" HAVE_MEMBERSHIP_H)
-LA_CHECK_INCLUDE_FILE("memory.h" HAVE_MEMORY_H)
-LA_CHECK_INCLUDE_FILE("paths.h" HAVE_PATHS_H)
-LA_CHECK_INCLUDE_FILE("poll.h" HAVE_POLL_H)
 LA_CHECK_INCLUDE_FILE("process.h" HAVE_PROCESS_H)
-LA_CHECK_INCLUDE_FILE("pthread.h" HAVE_PTHREAD_H)
-LA_CHECK_INCLUDE_FILE("pwd.h" HAVE_PWD_H)
 LA_CHECK_INCLUDE_FILE("readpassphrase.h" HAVE_READPASSPHRASE_H)
 LA_CHECK_INCLUDE_FILE("regex.h" HAVE_REGEX_H)
-LA_CHECK_INCLUDE_FILE("spawn.h" HAVE_SPAWN_H)
-LA_CHECK_INCLUDE_FILE("strings.h" HAVE_STRINGS_H)
-LA_CHECK_INCLUDE_FILE("sys/acl.h" HAVE_SYS_ACL_H)
-LA_CHECK_INCLUDE_FILE("sys/cdefs.h" HAVE_SYS_CDEFS_H)
 LA_CHECK_INCLUDE_FILE("sys/extattr.h" HAVE_SYS_EXTATTR_H)
 LA_CHECK_INCLUDE_FILE("sys/mkdev.h" HAVE_SYS_MKDEV_H)
-LA_CHECK_INCLUDE_FILE("sys/poll.h" HAVE_SYS_POLL_H)
 LA_CHECK_INCLUDE_FILE("sys/richacl.h" HAVE_SYS_RICHACL_H)
-LA_CHECK_INCLUDE_FILE("sys/select.h" HAVE_SYS_SELECT_H)
-LA_CHECK_INCLUDE_FILE("sys/statfs.h" HAVE_SYS_STATFS_H)
-LA_CHECK_INCLUDE_FILE("sys/statvfs.h" HAVE_SYS_STATVFS_H)
 LA_CHECK_INCLUDE_FILE("sys/sysmacros.h" HAVE_SYS_SYSMACROS_H)
 LA_CHECK_INCLUDE_FILE("sys/utime.h" HAVE_SYS_UTIME_H)
-LA_CHECK_INCLUDE_FILE("sys/utsname.h" HAVE_SYS_UTSNAME_H)
-LA_CHECK_INCLUDE_FILE("sys/vfs.h" HAVE_SYS_VFS_H)
-LA_CHECK_INCLUDE_FILE("sys/wait.h" HAVE_SYS_WAIT_H)
 LA_CHECK_INCLUDE_FILE("sys/xattr.h" HAVE_SYS_XATTR_H)
 LA_CHECK_INCLUDE_FILE("utime.h" HAVE_UTIME_H)
 LA_CHECK_INCLUDE_FILE("wchar.h" HAVE_WCHAR_H)
 LA_CHECK_INCLUDE_FILE("wctype.h" HAVE_WCTYPE_H)
-LA_CHECK_INCLUDE_FILE("windows.h" HAVE_WINDOWS_H)
-IF(ENABLE_CNG)
+# Windows headers are now handled by LA_BATCH_CHECK_PLATFORM_HEADERS()
+IF(NOT WIN32)
+  # Only check if not Windows (platform batch handles Windows)
+  LA_CHECK_INCLUDE_FILE("windows.h" HAVE_WINDOWS_H)
+ENDIF()
+IF(ENABLE_CNG AND NOT WIN32)
   LA_CHECK_INCLUDE_FILE("bcrypt.h" HAVE_BCRYPT_H)
   IF(HAVE_BCRYPT_H)
     LIST(APPEND ADDITIONAL_LIBS "bcrypt")
   ENDIF(HAVE_BCRYPT_H)
-ELSE(ENABLE_CNG)
+ELSEIF(NOT ENABLE_CNG)
   UNSET(HAVE_BCRYPT_H CACHE)
-ENDIF(ENABLE_CNG)
-# Following files need windows.h, so we should test it after windows.h test.
-LA_CHECK_INCLUDE_FILE("wincrypt.h" HAVE_WINCRYPT_H)
-LA_CHECK_INCLUDE_FILE("winioctl.h" HAVE_WINIOCTL_H)
+ENDIF()
+IF(NOT WIN32)
+  LA_CHECK_INCLUDE_FILE("wincrypt.h" HAVE_WINCRYPT_H)
+  LA_CHECK_INCLUDE_FILE("winioctl.h" HAVE_WINIOCTL_H)
+ENDIF()
 
 # Optimization: Restore original compiler flags after header checks
 IF(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$" AND DEFINED ORIGINAL_CMAKE_REQUIRED_FLAGS)
