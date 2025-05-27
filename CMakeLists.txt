@@ -94,6 +94,14 @@ set(MACHO_CURRENT_VERSION "${MACHO_COMPATIBILITY_VERSION}.${_revision}")
 # saving and restoring the state of the variables.
 INCLUDE(CMakePushCheckState)
 
+# Optimization: Speed up header checks by reducing compiler overhead
+IF(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$")
+  # Save original flags
+  SET(ORIGINAL_CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS}")
+  # Add flags to speed up compilation during checks
+  SET(CMAKE_REQUIRED_FLAGS "${CMAKE_REQUIRED_FLAGS} -w -O0 -fno-stack-protector")
+ENDIF()
+
 # Enable the pkg-config helpers.
 INCLUDE(FindPkgConfig)
 
@@ -684,37 +692,152 @@ MARK_AS_ADVANCED(CLEAR ZSTD_LIBRARY)
 CHECK_HEADER_DIRENT()
 
 SET(INCLUDES "")
+
+# Optimization: Use cached results if available from previous runs
 MACRO (LA_CHECK_INCLUDE_FILE header var)
-      CHECK_INCLUDE_FILES("${INCLUDES};${header}" ${var})
-      IF (${var})
-      	 SET(INCLUDES ${INCLUDES} ${header})
-      ENDIF (${var})
+  # Check if already cached from previous run
+  IF(NOT DEFINED ${var})
+    CHECK_INCLUDE_FILES("${INCLUDES};${header}" ${var})
+    IF (${var})
+      SET(INCLUDES ${INCLUDES} ${header})
+    ENDIF (${var})
+  ELSE()
+    # If already cached, add to includes if it was found
+    IF (${var})
+      SET(INCLUDES ${INCLUDES} ${header})
+    ENDIF (${var})
+  ENDIF()
 ENDMACRO (LA_CHECK_INCLUDE_FILE)
+
+# Optimization: Batch check common headers that are often available together
+MACRO (LA_BATCH_CHECK_INCLUDE_FILES)
+  # Check common C standard headers in one batch
+  SET(COMMON_HEADERS "errno.h" "fcntl.h" "limits.h" "locale.h" "signal.h" 
+                     "stdarg.h" "stdint.h" "stdlib.h" "string.h" "time.h" "unistd.h")
+  
+  # Only do batch check if none are already cached
+  SET(NEED_BATCH_CHECK TRUE)
+  FOREACH(header ${COMMON_HEADERS})
+    STRING(TOUPPER "${header}" header_upper)
+    STRING(REPLACE "/" "_" header_var "${header_upper}")
+    STRING(REPLACE "." "_" header_var "${header_var}")
+    SET(var_name "HAVE_${header_var}")
+    IF(DEFINED ${var_name})
+      SET(NEED_BATCH_CHECK FALSE)
+      BREAK()
+    ENDIF()
+  ENDFOREACH()
+  
+  IF(NEED_BATCH_CHECK)
+    # Create a combined check for all common headers
+    SET(BATCH_TEST_SOURCE "")
+    FOREACH(header ${COMMON_HEADERS})
+      SET(BATCH_TEST_SOURCE "${BATCH_TEST_SOURCE}#include <${header}>\n")
+    ENDFOREACH()
+    SET(BATCH_TEST_SOURCE "${BATCH_TEST_SOURCE}int main() { return 0; }")
+    
+    CHECK_C_SOURCE_COMPILES("${BATCH_TEST_SOURCE}" COMMON_HEADERS_AVAILABLE)
+    
+    IF(COMMON_HEADERS_AVAILABLE)
+      # If batch succeeded, mark all as available and add to includes
+      FOREACH(header ${COMMON_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        SET(${var_name} 1 CACHE BOOL "Have ${header}")
+        SET(INCLUDES ${INCLUDES} ${header})
+      ENDFOREACH()
+    ELSE()
+      # If batch failed, check individually (fallback)
+      FOREACH(header ${COMMON_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+      ENDFOREACH()
+    ENDIF()
+  ENDIF()
+ENDMACRO (LA_BATCH_CHECK_INCLUDE_FILES)
+
+# Optimization: Batch check sys/ headers
+MACRO (LA_BATCH_CHECK_SYS_HEADERS)
+  SET(SYS_HEADERS "sys/stat.h" "sys/time.h" "sys/param.h" "sys/mount.h" "sys/ioctl.h")
+  
+  # Only do batch check if none are already cached
+  SET(NEED_SYS_BATCH_CHECK TRUE)
+  FOREACH(header ${SYS_HEADERS})
+    STRING(TOUPPER "${header}" header_upper)
+    STRING(REPLACE "/" "_" header_var "${header_upper}")
+    STRING(REPLACE "." "_" header_var "${header_var}")
+    SET(var_name "HAVE_${header_var}")
+    IF(DEFINED ${var_name})
+      SET(NEED_SYS_BATCH_CHECK FALSE)
+      BREAK()
+    ENDIF()
+  ENDFOREACH()
+  
+  IF(NEED_SYS_BATCH_CHECK)
+    # Create a combined check for sys headers
+    SET(SYS_BATCH_TEST_SOURCE "#include <sys/types.h>\n")
+    FOREACH(header ${SYS_HEADERS})
+      SET(SYS_BATCH_TEST_SOURCE "${SYS_BATCH_TEST_SOURCE}#include <${header}>\n")
+    ENDFOREACH()
+    SET(SYS_BATCH_TEST_SOURCE "${SYS_BATCH_TEST_SOURCE}int main() { return 0; }")
+    
+    CHECK_C_SOURCE_COMPILES("${SYS_BATCH_TEST_SOURCE}" SYS_HEADERS_AVAILABLE)
+    
+    IF(SYS_HEADERS_AVAILABLE)
+      # If batch succeeded, mark all as available and add to includes
+      FOREACH(header ${SYS_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        SET(${var_name} 1 CACHE BOOL "Have ${header}")
+        SET(INCLUDES ${INCLUDES} ${header})
+      ENDFOREACH()
+    ELSE()
+      # If batch failed, check individually (fallback)
+      FOREACH(header ${SYS_HEADERS})
+        STRING(TOUPPER "${header}" header_upper)
+        STRING(REPLACE "/" "_" header_var "${header_upper}")
+        STRING(REPLACE "." "_" header_var "${header_var}")
+        SET(var_name "HAVE_${header_var}")
+        LA_CHECK_INCLUDE_FILE("${header}" ${var_name})
+      ENDFOREACH()
+    ENDIF()
+  ENDIF()
+ENDMACRO (LA_BATCH_CHECK_SYS_HEADERS)
 
 # Some FreeBSD headers assume sys/types.h was already included.
 LA_CHECK_INCLUDE_FILE("sys/types.h" HAVE_SYS_TYPES_H)
 
-# Alphabetize the rest unless there's a compelling reason
+# Use batch checking for common standard headers
+LA_BATCH_CHECK_INCLUDE_FILES()
+
+# Use batch checking for common sys/ headers
+LA_BATCH_CHECK_SYS_HEADERS()
+
+# Check remaining headers individually
 LA_CHECK_INCLUDE_FILE("acl/libacl.h" HAVE_ACL_LIBACL_H)
 LA_CHECK_INCLUDE_FILE("attr/xattr.h" HAVE_ATTR_XATTR_H)
 LA_CHECK_INCLUDE_FILE("ctype.h" HAVE_CTYPE_H)
 LA_CHECK_INCLUDE_FILE("copyfile.h" HAVE_COPYFILE_H)
 LA_CHECK_INCLUDE_FILE("direct.h" HAVE_DIRECT_H)
 LA_CHECK_INCLUDE_FILE("dlfcn.h" HAVE_DLFCN_H)
-LA_CHECK_INCLUDE_FILE("errno.h" HAVE_ERRNO_H)
 LA_CHECK_INCLUDE_FILE("ext2fs/ext2_fs.h" HAVE_EXT2FS_EXT2_FS_H)
 
 CHECK_C_SOURCE_COMPILES("#include <sys/ioctl.h>
 #include <ext2fs/ext2_fs.h>
 int main(void) { return EXT2_IOC_GETFLAGS; }" HAVE_WORKING_EXT2_IOC_GETFLAGS)
 
-LA_CHECK_INCLUDE_FILE("fcntl.h" HAVE_FCNTL_H)
 LA_CHECK_INCLUDE_FILE("fnmatch.h" HAVE_FNMATCH_H)
 LA_CHECK_INCLUDE_FILE("grp.h" HAVE_GRP_H)
 LA_CHECK_INCLUDE_FILE("inttypes.h" HAVE_INTTYPES_H)
 LA_CHECK_INCLUDE_FILE("io.h" HAVE_IO_H)
 LA_CHECK_INCLUDE_FILE("langinfo.h" HAVE_LANGINFO_H)
-LA_CHECK_INCLUDE_FILE("limits.h" HAVE_LIMITS_H)
 LA_CHECK_INCLUDE_FILE("linux/types.h" HAVE_LINUX_TYPES_H)
 LA_CHECK_INCLUDE_FILE("linux/fiemap.h" HAVE_LINUX_FIEMAP_H)
 LA_CHECK_INCLUDE_FILE("linux/fs.h" HAVE_LINUX_FS_H)
@@ -724,7 +847,6 @@ CHECK_C_SOURCE_COMPILES("#include <sys/ioctl.h>
 int main(void) { return FS_IOC_GETFLAGS; }" HAVE_WORKING_FS_IOC_GETFLAGS)
 
 LA_CHECK_INCLUDE_FILE("linux/magic.h" HAVE_LINUX_MAGIC_H)
-LA_CHECK_INCLUDE_FILE("locale.h" HAVE_LOCALE_H)
 LA_CHECK_INCLUDE_FILE("membership.h" HAVE_MEMBERSHIP_H)
 LA_CHECK_INCLUDE_FILE("memory.h" HAVE_MEMORY_H)
 LA_CHECK_INCLUDE_FILE("paths.h" HAVE_PATHS_H)
@@ -734,35 +856,23 @@ LA_CHECK_INCLUDE_FILE("pthread.h" HAVE_PTHREAD_H)
 LA_CHECK_INCLUDE_FILE("pwd.h" HAVE_PWD_H)
 LA_CHECK_INCLUDE_FILE("readpassphrase.h" HAVE_READPASSPHRASE_H)
 LA_CHECK_INCLUDE_FILE("regex.h" HAVE_REGEX_H)
-LA_CHECK_INCLUDE_FILE("signal.h" HAVE_SIGNAL_H)
 LA_CHECK_INCLUDE_FILE("spawn.h" HAVE_SPAWN_H)
-LA_CHECK_INCLUDE_FILE("stdarg.h" HAVE_STDARG_H)
-LA_CHECK_INCLUDE_FILE("stdint.h" HAVE_STDINT_H)
-LA_CHECK_INCLUDE_FILE("stdlib.h" HAVE_STDLIB_H)
-LA_CHECK_INCLUDE_FILE("string.h" HAVE_STRING_H)
 LA_CHECK_INCLUDE_FILE("strings.h" HAVE_STRINGS_H)
 LA_CHECK_INCLUDE_FILE("sys/acl.h" HAVE_SYS_ACL_H)
 LA_CHECK_INCLUDE_FILE("sys/cdefs.h" HAVE_SYS_CDEFS_H)
 LA_CHECK_INCLUDE_FILE("sys/extattr.h" HAVE_SYS_EXTATTR_H)
-LA_CHECK_INCLUDE_FILE("sys/ioctl.h" HAVE_SYS_IOCTL_H)
 LA_CHECK_INCLUDE_FILE("sys/mkdev.h" HAVE_SYS_MKDEV_H)
-LA_CHECK_INCLUDE_FILE("sys/mount.h" HAVE_SYS_MOUNT_H)
-LA_CHECK_INCLUDE_FILE("sys/param.h" HAVE_SYS_PARAM_H)
 LA_CHECK_INCLUDE_FILE("sys/poll.h" HAVE_SYS_POLL_H)
 LA_CHECK_INCLUDE_FILE("sys/richacl.h" HAVE_SYS_RICHACL_H)
 LA_CHECK_INCLUDE_FILE("sys/select.h" HAVE_SYS_SELECT_H)
-LA_CHECK_INCLUDE_FILE("sys/stat.h" HAVE_SYS_STAT_H)
 LA_CHECK_INCLUDE_FILE("sys/statfs.h" HAVE_SYS_STATFS_H)
 LA_CHECK_INCLUDE_FILE("sys/statvfs.h" HAVE_SYS_STATVFS_H)
 LA_CHECK_INCLUDE_FILE("sys/sysmacros.h" HAVE_SYS_SYSMACROS_H)
-LA_CHECK_INCLUDE_FILE("sys/time.h" HAVE_SYS_TIME_H)
 LA_CHECK_INCLUDE_FILE("sys/utime.h" HAVE_SYS_UTIME_H)
 LA_CHECK_INCLUDE_FILE("sys/utsname.h" HAVE_SYS_UTSNAME_H)
 LA_CHECK_INCLUDE_FILE("sys/vfs.h" HAVE_SYS_VFS_H)
 LA_CHECK_INCLUDE_FILE("sys/wait.h" HAVE_SYS_WAIT_H)
 LA_CHECK_INCLUDE_FILE("sys/xattr.h" HAVE_SYS_XATTR_H)
-LA_CHECK_INCLUDE_FILE("time.h" HAVE_TIME_H)
-LA_CHECK_INCLUDE_FILE("unistd.h" HAVE_UNISTD_H)
 LA_CHECK_INCLUDE_FILE("utime.h" HAVE_UTIME_H)
 LA_CHECK_INCLUDE_FILE("wchar.h" HAVE_WCHAR_H)
 LA_CHECK_INCLUDE_FILE("wctype.h" HAVE_WCTYPE_H)
@@ -778,6 +888,11 @@ ENDIF(ENABLE_CNG)
 # Following files need windows.h, so we should test it after windows.h test.
 LA_CHECK_INCLUDE_FILE("wincrypt.h" HAVE_WINCRYPT_H)
 LA_CHECK_INCLUDE_FILE("winioctl.h" HAVE_WINIOCTL_H)
+
+# Optimization: Restore original compiler flags after header checks
+IF(CMAKE_C_COMPILER_ID MATCHES "^(GNU|Clang)$" AND DEFINED ORIGINAL_CMAKE_REQUIRED_FLAGS)
+  SET(CMAKE_REQUIRED_FLAGS "${ORIGINAL_CMAKE_REQUIRED_FLAGS}")
+ENDIF()
 
 #
 # Check whether use of __EXTENSIONS__ is safe.
