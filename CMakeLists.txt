@@ -1,6 +1,9 @@
 #
 cmake_minimum_required(VERSION 3.17 FATAL_ERROR)
 
+# Determine if libarchive is being used as a subdirectory of another project
+get_directory_property(LIBARCHIVE_IS_SUBPROJECT PARENT_DIRECTORY)
+
 PROJECT(libarchive C)
 #
 SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/build/cmake")
@@ -8,32 +11,34 @@ if(NOT CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${libarchive_BINARY_DIR}/bin)
 endif()
 #
-# Set the Build type for make based generators.
+# Set the Build type for make based generators only if this is the main project
 # You can choose following types:
 #   Debug          : Debug build
 #   Release        : Release build
 #   RelWithDebInfo : Release build with Debug Info
 #   MinSizeRel     : Release Min Size build
 #   None           : No build type
-IF(NOT CMAKE_BUILD_TYPE)
+IF(NOT LIBARCHIVE_IS_SUBPROJECT AND NOT CMAKE_BUILD_TYPE)
   SET(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build Type" FORCE)
-ENDIF(NOT CMAKE_BUILD_TYPE)
+ENDIF()
 # Set a value type to properly display CMAKE_BUILD_TYPE on GUI if the
-# value type is "UNINITIALIZED".
-GET_PROPERTY(cached_type CACHE CMAKE_BUILD_TYPE PROPERTY TYPE)
-IF("${cached_type}" STREQUAL "UNINITIALIZED")
-  SET(CMAKE_BUILD_TYPE "${CMAKE_BUILD_TYPE}" CACHE STRING "Build Type" FORCE)
-ENDIF("${cached_type}" STREQUAL "UNINITIALIZED")
-# Check the Build Type.
-# Convert the CMAKE_BUILD_TYPE to uppercase to perform a case-insensitive comparison.
-string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
-IF(NOT "${CMAKE_BUILD_TYPE_UPPER}"
-       MATCHES "^(DEBUG|RELEASE|RELWITHDEBINFO|MINSIZEREL|NONE)\$")
-  MESSAGE(FATAL_ERROR
-          "Unknown keyword for CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}\n"
-          "Acceptable keywords: Debug, Release, RelWithDebInfo, MinSizeRel, None")
-ENDIF(NOT "${CMAKE_BUILD_TYPE_UPPER}"
-       MATCHES "^(DEBUG|RELEASE|RELWITHDEBINFO|MINSIZEREL|NONE)\$")
+# value type is "UNINITIALIZED" and this is the main project.
+IF(NOT LIBARCHIVE_IS_SUBPROJECT)
+  GET_PROPERTY(cached_type CACHE CMAKE_BUILD_TYPE PROPERTY TYPE)
+  IF("${cached_type}" STREQUAL "UNINITIALIZED")
+    SET(CMAKE_BUILD_TYPE "${CMAKE_BUILD_TYPE}" CACHE STRING "Build Type" FORCE)
+  ENDIF("${cached_type}" STREQUAL "UNINITIALIZED")
+  # Check the Build Type.
+  # Convert the CMAKE_BUILD_TYPE to uppercase to perform a case-insensitive comparison.
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" CMAKE_BUILD_TYPE_UPPER)
+  IF(NOT "${CMAKE_BUILD_TYPE_UPPER}"
+         MATCHES "^(DEBUG|RELEASE|RELWITHDEBINFO|MINSIZEREL|NONE)\$")
+    MESSAGE(FATAL_ERROR
+            "Unknown keyword for CMAKE_BUILD_TYPE: ${CMAKE_BUILD_TYPE}\n"
+            "Acceptable keywords: Debug, Release, RelWithDebInfo, MinSizeRel, None")
+  ENDIF(NOT "${CMAKE_BUILD_TYPE_UPPER}"
+         MATCHES "^(DEBUG|RELEASE|RELWITHDEBINFO|MINSIZEREL|NONE)\$")
+ENDIF()
 
 # On MacOS, prefer MacPorts libraries to system libraries.
 # I haven't come up with a compelling argument for this to be conditional.
@@ -270,6 +275,19 @@ ENDIF (MSVC)
 # Enable CTest/CDash support
 include(CTest)
 
+# Set default options based on whether this is a subproject
+if(LIBARCHIVE_IS_SUBPROJECT)
+  # When used as a subproject, default to more minimal configuration
+  set(LIBARCHIVE_DEFAULT_INSTALL OFF)
+  set(LIBARCHIVE_DEFAULT_TEST OFF)
+  set(LIBARCHIVE_DEFAULT_TOOLS OFF)
+else()
+  # When used as main project, use full configuration
+  set(LIBARCHIVE_DEFAULT_INSTALL ON)
+  set(LIBARCHIVE_DEFAULT_TEST ON)
+  set(LIBARCHIVE_DEFAULT_TOOLS ON)
+endif()
+
 option(BUILD_SHARED_LIBS "Build shared libraries" ON)
 
 OPTION(ENABLE_MBEDTLS "Enable use of mbed TLS" OFF)
@@ -292,25 +310,25 @@ OPTION(ENABLE_LIBGCC "Enable the use of the system LibGCC library if found" ON)
 # CNG is used for encrypt/decrypt Zip archives on Windows.
 OPTION(ENABLE_CNG "Enable the use of CNG(Crypto Next Generation)" ON)
 
-OPTION(ENABLE_TAR "Enable tar building" ON)
+OPTION(ENABLE_TAR "Enable tar building" ${LIBARCHIVE_DEFAULT_TOOLS})
 OPTION(ENABLE_TAR_SHARED "Enable dynamic build of tar" FALSE)
-OPTION(ENABLE_CPIO "Enable cpio building" ON)
+OPTION(ENABLE_CPIO "Enable cpio building" ${LIBARCHIVE_DEFAULT_TOOLS})
 OPTION(ENABLE_CPIO_SHARED "Enable dynamic build of cpio" FALSE)
-OPTION(ENABLE_CAT "Enable cat building" ON)
+OPTION(ENABLE_CAT "Enable cat building" ${LIBARCHIVE_DEFAULT_TOOLS})
 OPTION(ENABLE_CAT_SHARED "Enable dynamic build of cat" FALSE)
 IF(WIN32 AND NOT CYGWIN)
 	SET(ENABLE_UNZIP FALSE)
 	SET(ENABLE_UNZIP_SHARED FALSE)
 ELSE()
-	OPTION(ENABLE_UNZIP "Enable unzip building" ON)
+	OPTION(ENABLE_UNZIP "Enable unzip building" ${LIBARCHIVE_DEFAULT_TOOLS})
 	OPTION(ENABLE_UNZIP_SHARED "Enable dynamic build of unzip" FALSE)
 ENDIF()
 OPTION(ENABLE_XATTR "Enable extended attribute support" ON)
 OPTION(ENABLE_ACL "Enable ACL support" ON)
 OPTION(ENABLE_ICONV "Enable iconv support" ON)
-OPTION(ENABLE_TEST "Enable unit and regression tests" ON)
+OPTION(ENABLE_TEST "Enable unit and regression tests" ${LIBARCHIVE_DEFAULT_TEST})
 OPTION(ENABLE_COVERAGE "Enable code coverage (GCC only, automatically sets ENABLE_TEST to ON)" FALSE)
-OPTION(ENABLE_INSTALL "Enable installing of libraries" ON)
+OPTION(ENABLE_INSTALL "Enable installing of libraries" ${LIBARCHIVE_DEFAULT_INSTALL})
 
 SET(POSIX_REGEX_LIB "AUTO" CACHE STRING "Choose what library should provide POSIX regular expression support")
 SET(ENABLE_SAFESEH "AUTO" CACHE STRING "Enable use of /SAFESEH linker flag (MSVC only)")
@@ -3153,7 +3171,20 @@ IF(ENABLE_TEST)
 ENDIF(ENABLE_TEST)
 
 add_subdirectory(libarchive)
-add_subdirectory(cat)
-add_subdirectory(tar)
-add_subdirectory(cpio)
-add_subdirectory(unzip)
+
+# Only build command-line tools if requested
+if(ENABLE_CAT)
+  add_subdirectory(cat)
+endif()
+
+if(ENABLE_TAR)
+  add_subdirectory(tar)
+endif()
+
+if(ENABLE_CPIO)
+  add_subdirectory(cpio)
+endif()
+
+if(ENABLE_UNZIP)
+  add_subdirectory(unzip)
+endif()

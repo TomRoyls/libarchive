@@ -246,7 +246,10 @@ ENDIF()
 # Libarchive is a shared library
 IF(BUILD_SHARED_LIBS)
   ADD_LIBRARY(archive SHARED ${libarchive_SOURCES} ${include_HEADERS})
-  TARGET_INCLUDE_DIRECTORIES(archive PUBLIC .)
+  TARGET_INCLUDE_DIRECTORIES(archive PUBLIC 
+    $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+    $<INSTALL_INTERFACE:include>
+  )
   TARGET_LINK_LIBRARIES(archive ${ADDITIONAL_LIBS})
   SET_TARGET_PROPERTIES(archive PROPERTIES 
                         VERSION ${SOVERSION_FULL}
@@ -257,7 +260,10 @@ ENDIF(BUILD_SHARED_LIBS)
 
 # archive_static is a static library
 ADD_LIBRARY(archive_static STATIC ${libarchive_SOURCES} ${include_HEADERS})
-TARGET_INCLUDE_DIRECTORIES(archive_static PUBLIC .)
+TARGET_INCLUDE_DIRECTORIES(archive_static PUBLIC 
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}>
+  $<INSTALL_INTERFACE:include>
+)
 TARGET_LINK_LIBRARIES(archive_static ${ADDITIONAL_LIBS})
 SET_TARGET_PROPERTIES(archive_static PROPERTIES COMPILE_DEFINITIONS
   LIBARCHIVE_STATIC)
@@ -265,6 +271,19 @@ SET_TARGET_PROPERTIES(archive_static PROPERTIES COMPILE_DEFINITIONS
 IF(NOT WIN32 OR CYGWIN OR NOT BUILD_SHARED_LIBS)
   SET_TARGET_PROPERTIES(archive_static PROPERTIES OUTPUT_NAME archive)
 ENDIF(NOT WIN32 OR CYGWIN OR NOT BUILD_SHARED_LIBS)
+
+# Create alias targets for easier use in parent projects
+if(BUILD_SHARED_LIBS)
+  add_library(LibArchive::LibArchive ALIAS archive)
+else()
+  add_library(LibArchive::LibArchive ALIAS archive_static)
+endif()
+
+# Also create specific aliases for both variants
+if(TARGET archive)
+  add_library(LibArchive::Shared ALIAS archive)
+endif()
+add_library(LibArchive::Static ALIAS archive_static)
 
 IF(ENABLE_INSTALL)
   # How to install the libraries
@@ -282,4 +301,6 @@ IF(ENABLE_INSTALL)
   INSTALL(FILES ${include_HEADERS} DESTINATION include)
 ENDIF()
 
-add_subdirectory(test)
+if(ENABLE_TEST)
+  add_subdirectory(test)
+endif()
